@@ -1,0 +1,52 @@
+---
+title: "Exploratory Data Analysis"
+author: "Team 2: Jun Sik Ryu, Austin Mallie, Cynthia Portales-Loebell"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: true
+execute:
+  echo: true
+  warning: false
+  message: false
+  working-directory: "/cloud/project"
+---
+
+# Ensure all code chunks run from project root
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath("..", mustWork = FALSE))
+install.packages("tidyverse")
+library(fpp3)
+library(cdcfluview)
+library(tidyverse)
+library(lubridate)
+```
+
+# Introduction
+
+This exploratory data analysis investigates influenza-like illness (ILI) patterns using weekly ILINet data from the CDC.\
+The goal is to understand seasonal patterns, data quality, and characteristics before modeling.
+
+# Data Import and Cleaning
+
+```{r}
+# Import national ILINet data
+ili_raw <- ilinet(region = "national")
+```
+
+# Convert to tsibble
+
+```{r}
+ili_ts <- ili_raw %>% mutate(week = yearweek(week_end)) %>% as_tsibble(index = week)
+
+ili_ts
+```
+
+ili_ts \<- ili_raw %\>%\
+mutate(week = yearweek(week_end)) %\>%\
+as_tsibble(index = week)
+
+ili_ts

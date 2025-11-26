@@ -1,0 +1,25 @@
+---
+title: "Exploratory Data Analysis"
+format:
+  html:
+    theme: cosmo
+    toc: true
+    code-fold: true
+---
+
+```{r setup, include=FALSE}
+install.packages("knitr")
+library(knitr)
+knitr::opts_knit$set(root.dir = "/cloud/project")
+```
+
+```{r}
+execute:
+  echo: false
+  warning: false
+  message: false
+```
+
+```{r}
+source("scripts/00_import_clean.R")
+```
