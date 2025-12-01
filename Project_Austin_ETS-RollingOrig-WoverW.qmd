@@ -1,0 +1,305 @@
+---
+title: "506 Project"
+format: html
+editor: visual
+---
+
+```{r}
+library(httr); library(jsonlite); library(dplyr)
+library(tsibble); library(lubridate); library(ggplot2)
+library(fable); library(fabletools)
+
+# ---- CMU Delphi FluView pull: ILINet %wILI ----
+delphi_ilinet <- function(regions = c("hhs4"),
+                          epiweeks = "199740-205001",
+                          measure = c("wili","ili")) {
+  measure <- match.arg(measure)
+  resp <- GET("https://api.delphi.cmu.edu/epidata/fluview/",
+              query = list(regions = paste(regions, collapse = ","),
+                           epiweeks = epiweeks))
+  stop_for_status(resp)
+  j <- fromJSON(content(resp, as = "text", encoding = "UTF-8"))
+
+  if (is.null(j$result) || j$result != 1 || length(j$epidata) == 0)
+    stop("No ILINet data returned. Check region codes or epiweeks range.")
+
+  dat <- as_tibble(j$epidata) %>%
+    transmute(
+      region,
+      epiweek = as.integer(epiweek),
+      year    = epiweek %/% 100L,
+      week    = epiweek %% 100L,
+      week_ending = ISOweek::ISOweek2date(sprintf("%d-W%02d-7", year, week)),
+      yearweek    = tsibble::yearweek(week_ending),
+      ili         = if (measure == "wili") wili else ili
+    ) %>%
+    arrange(region, yearweek) %>%
+    distinct(region, yearweek, .keep_all = TRUE) %>%
+    mutate(ili = as.numeric(ili))
+
+  dat %>% as_tsibble(index = yearweek, key = region)
+}
+
+# Pull HHS region 4 wILI
+ili_ts <- delphi_ilinet(regions = "hhs4",
+                        epiweeks = "199740-205001",
+                        measure = "wili") %>%
+  filter(!is.na(ili))   
+```
+
+```{r}
+ili_ts %>%
+  filter(yearweek >= max(yearweek) - 52*5) %>%
+  ggplot(aes(yearweek, ili)) +
+  geom_line() +
+  labs(
+    title = "HHS Region 4 %wILI — Last 5 Seasons",
+    x = NULL, y = "%wILI"
+  )
+```
+
+```{r}
+library(dplyr)
+library(tsibble)
+library(fable)
+library(fabletools)
+library(ggplot2)
+
+
+# Linear interpolation for NA values 
+
+interp_na <- function(x) {
+  idx  <- seq_along(x)
+  good <- !is.na(x)
+
+  if (all(!good)) return(x)
+
+  x[!good] <- approx(
+    x = idx[good],
+    y = x[good],
+    xout = idx[!good],
+    rule = 2
+  )$y
+
+  x
+}
+
+ili_mod <- ili_ts %>%
+  filter(region == "hhs4") %>%         
+  mutate(ili = as.numeric(ili)) %>%
+  group_by_key() %>%
+  fill_gaps() %>%                      
+  mutate(ili = interp_na(ili)) %>%     # interpolate missing values
+  ungroup()
+
+# 2. Train/Test split (last 52 weeks for testing)
+
+split_point <- max(ili_mod$yearweek) - 52
+
+train_data <- ili_mod %>% filter(yearweek <= split_point)
+test_data  <- ili_mod %>% filter(yearweek >  split_point)
+
+n_test <- nrow(test_data)
+
+# 3. ETS Models (manual + auto) — non-seasonal (ETS cannot handle weekly S=52)
+
+fit_ets <- train_data %>%
+  model(
+    ets_manual = ETS(ili ~ error("A") + trend("A") + season("N")),  # ETS(A,A,N)
+    ets_auto   = ETS(ili ~ season("N"))                             # auto ETS, no seasonality
+  )
+
+# 4. Forecasts
+
+fc_ets <- fit_ets %>%
+  forecast(h = n_test)
+
+# 5. Plot Forecasts
+
+autoplot(fc_ets, ili_mod) +
+  labs(
+    title = "Manual vs Auto ETS Forecasts of %wILI (HHS Region 4)",
+    x = "Year-Week",
+    y = "%wILI"
+  )
+
+
+# 6. Accuracy Comparison
+
+accuracy_ets <- fc_ets %>%
+  accuracy(test_data) %>%
+  select(.model, RMSE, MAE, MAPE)
+
+accuracy_ets
+```
+
+```{r}
+library(dplyr)
+library(tsibble)
+library(fable)
+library(fabletools)
+library(ggplot2)
+library(feasts)
+
+
+# MANUAL ETS model (A,A,N)
+
+fit_manual_full <- train_data %>%
+  model(
+    ets_manual = ETS(ili ~ error("A") + trend("A") + season("N"))
+  )
+
+fc_manual_full <- fit_manual_full %>%
+  forecast(h = n_test)
+
+# Plot manual ETS forecast, capped at 40%
+autoplot(fc_manual_full, ili_mod) +
+  coord_cartesian(ylim = c(0, 40)) +   # <--- CAP HERE
+  labs(
+    title = "Manual ETS(A,A,N) Forecast of %wILI ",
+    x = "Year-Week",
+    y = "%wILI"
+  )
+
+# Accuracy 
+accuracy_manual_full <- fc_manual_full %>%
+  accuracy(test_data) %>%
+  select(.model, RMSE, MAE, MAPE)
+
+accuracy_manual_full
+
+
+# AUTO ETS model (forced non-seasonal because ETS cannot handle S=52)
+
+fit_auto_full <- train_data %>%
+  model(
+    ets_auto = ETS(ili ~ season("N"))
+  )
+
+fc_auto_full <- fit_auto_full %>%
+  forecast(h = n_test)
+
+# Plot auto ETS forecast, capped at 40%
+autoplot(fc_auto_full, ili_mod) +
+  coord_cartesian(ylim = c(0, 40)) +   # <--- CAP HERE
+  labs(
+    title = "Auto ETS Forecast of %wILI",
+    x = "Year-Week",
+    y = "%wILI"
+  )
+
+# Accuracy (optional)
+accuracy_auto_full <- fc_auto_full %>%
+  accuracy(test_data) %>%
+  select(.model, RMSE, MAE, MAPE)
+
+accuracy_auto_full
+
+
+```
+
+\
+\# Discussion 4 Work
+
+```{r}
+library(ggtime)  
+
+# Fit the non-seasonal ETS model to the full series
+fit_ets_b <- ili_mod %>%
+  model(
+    ets_manual = ETS(ili ~ error("A") + trend("A") + season("N"))
+  )
+
+
+# Residual diagnostics for ETS model
+fit_ets_b %>%
+  ggtime::gg_tsresiduals()
+
+# Ljung-Box test on residuals (check for remaining autocorrelation)
+augment(fit_ets_b) %>%
+  features(.innov, ljung_box, lag = 24)
+```
+
+```{r}
+library(tsibble)
+
+
+# Rolling-origin time series CV for ETS(A,A,N)
+cv_fc <- ili_mod %>%
+  stretch_tsibble(.init = 8 * 52, .step = 13) %>%   # rolling origins
+  model(
+    ets_manual = ETS(ili ~ error("A") + trend("A") + season("N"))
+  ) %>%
+  forecast(h = 52)                                   # 1-year ahead forecasts
+
+# Accuracy for each origin & model
+cv_acc <- cv_fc %>%
+  accuracy(ili_mod, by = c(".model", ".id")) %>%    # group by model & origin
+  filter(.type == "Test") %>%                        # out-of-sample errors only
+  select(.model, .id, RMSE, MAE, MAPE)
+
+# Summary across all rolling-origin forecast horizons
+cv_acc_summary <- cv_acc %>%
+  group_by(.model) %>%
+  summarise(
+    mean_RMSE = mean(RMSE, na.rm = TRUE),
+    mean_MAE  = mean(MAE,  na.rm = TRUE),
+    mean_MAPE = mean(MAPE, na.rm = TRUE)
+  )
+
+cv_acc_summary
+```
+
+```{r}
+cv_acc %>%
+  ggplot(aes(x = .id, y = RMSE)) +
+  geom_line() +
+  labs(
+    title = "Rolling-Origin RMSE for ETS(A,A,N) Model",
+    x = "Cross-Validation Origin Index",
+    y = "RMSE"
+  )   
+```
+
+Week Over Week Absolute vs Percent Change
+
+```{r}
+# Starting from your ili_full object
+ili_rates <- ili_mod %>%
+  arrange(yearweek) %>%
+  mutate(
+    # absolute week-over-week change in %wILI
+    ili_diff = ili - lag(ili),
+
+    # percent week-over-week change 
+    ili_pct_change = ifelse(
+      lag(ili) == 0 | is.na(lag(ili)),
+      NA_real_,
+      (ili - lag(ili)) / lag(ili) * 100
+    ),
+
+    # epiweek so you can zoom in on weeks 40–45
+    epiweek = epiweek(as.Date(yearweek))
+  )
+ili_rates %>%
+  filter(yearweek > max(yearweek) - 52 * 5) %>%        # last 5 seasons
+  ggplot(aes(x = yearweek, y = ili_diff)) +
+  geom_line() +
+  labs(
+    title = "Week-over-Week Change in %wILI\nHHS Region 4 – Last 5 Seasons",
+    x = "Year-Week",
+    y = "Δ %wILI (current week – previous week)"
+  )
+
+ili_rates %>%
+  filter(yearweek > max(yearweek) - 52 * 5) %>%
+  ggplot(aes(x = yearweek, y = ili_pct_change)) +
+  geom_line() +
+  labs(
+    title = "Week-over-Week Percent Change in %wILI\nHHS Region 4 – Last 5 Seasons",
+    x = "Year-Week",
+    y = "Week-over-Week % Change"
+  )
+```
+
+\
