@@ -219,6 +219,51 @@ test  <- ili_ts |> filter(week >= yearweek("2020 W01"))
 
 # Modeling
 
+TSLM
+
+```{r tslm-model}
+fit_tslm <- train |>
+  model(
+    tslm = TSLM(weighted_ili ~ trend() + season())
+  )
+
+report(fit_tslm)
+```
+
+```{r tslm-plot}
+tslm_aug <- fit_tslm |>
+augment()
+
+autoplot(train, weighted_ili) +
+autolayer(tslm_aug, .fitted, color = "blue") +
+labs(
+title = "TSLM Fit on Weekly Weighted ILI (%)",
+x = "Week",
+y = "Weighted ILI (%)"
+)
+```
+
+```{r tslm-forecast}
+fc_tslm <- fit_tslm |>
+forecast(h = nrow(test))
+
+fc_tslm |>
+autoplot(train, level = NULL) +
+autolayer(test, weighted_ili, color = "black") +
+labs(
+title = "TSLM Forecast vs Actual (Original Scale)",
+x = "Week",
+y = "Weighted ILI (%)"
+)
+```
+
+```{r tslm-accuracy}
+accuracy_tslm <- fc_tslm |>
+accuracy(test)
+
+accuracy_tslm
+```
+
 ARIMA Modeling
 
 ```{r ARIMA}
